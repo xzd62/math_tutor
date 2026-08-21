@@ -1,0 +1,9 @@
+# 敏感数据 - 绝不提交
+.env
+
+# 运行时生成的数据
+chroma_db/
+
+# Python 缓存
+__pycache__/
+*.pyc

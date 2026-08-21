@@ -1,0 +1,10 @@
+langchain>=1.0
+langchain-community
+langchain-core
+langchain-deepseek
+langchain-huggingface
+langchain-text-splitters
+langchain-chroma
+python-dotenv
+gradio>=6.0
+sentence-transformers
