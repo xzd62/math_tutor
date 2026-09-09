@@ -1,4 +1,3 @@
-import uuid
 import hashlib
 from pathlib import Path
 from typing import List, Dict
@@ -64,7 +63,9 @@ class DataPrep:
             parent_id = doc.metadata["parent_id"]
 
             for i, chunk in enumerate(md_chunks):
-                child_id = str(uuid.uuid4())
+                # 确定性 id：由父文档 id + 块序号哈希生成，跨运行稳定。
+                # 向量库里的副本与本次运行的子块才能按 chunk_id 正确去重
+                child_id = hashlib.md5(f"{parent_id}:{i}".encode("utf-8")).hexdigest()
                 chunk.metadata.update(doc.metadata)
                 chunk.metadata.update({
                     "chunk_id": child_id,

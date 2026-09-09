@@ -8,3 +8,5 @@ langchain-chroma
 python-dotenv
 gradio>=6.0
 sentence-transformers
+jieba
+rank_bm25

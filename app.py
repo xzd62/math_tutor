@@ -58,15 +58,25 @@ def ask(message, history):
 
 prep, retriever, tutor = setup_pipeline()
 
+LATEX_DELIMITERS = [
+    {"left": "$$", "right": "$$", "display": True},     # 块级公式
+    {"left": "\\[", "right": "\\]", "display": True},   # 块级公式(另一写法)
+    {"left": "$", "right": "$", "display": False},       # 行内公式
+    {"left": "\\(", "right": "\\)", "display": False},   # 行内公式(另一写法)
+]
+
+
 with gr.Blocks(title="初中数学家教 Agent") as demo:
     gr.Markdown("## 初中数学家教 Agent\n基于教材知识点分步讲解，公式用 LaTeX 呈现。")
-    kp_output = gr.Markdown(label="本次命中的知识点")
+    kp_output = gr.Markdown(label="本次命中的知识点", latex_delimiters=LATEX_DELIMITERS)
+    chatbot = gr.Chatbot(latex_delimiters=LATEX_DELIMITERS)
     gr.ChatInterface(
         fn=ask,
         title="初中数学家教",
         description="问任意初中数学问题，我会基于教材知识点给你分步讲解。",
         examples=["一元二次方程怎么解", "x的平方减5x加6等于0怎么解", "什么是判别式？"],
         additional_outputs=[kp_output],
+        chatbot=chatbot,
     )
 
 if __name__ == "__main__":
