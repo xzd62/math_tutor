@@ -1,6 +1,3 @@
-import os
-from pathlib import Path
-
 import gradio as gr
 
 from data_prep import DataPrep
@@ -19,13 +16,27 @@ def setup_pipeline():
     chunks = prep.chunk_textbook()
 
     builder = IndexBuilder(persist_dir=PERSIST_DIR)
-    if Path(PERSIST_DIR).exists():
-        vs = builder.load_index()
-        # 索引缺失或教材变多（子块数量对不上）时重建
-        if vs is None or vs._collection.count() != len(chunks):
-            vs = builder.build_index(chunks)
-    else:
+
+    # 教材哈希清单比对：教材有增删改则清库重建，否则直接加载
+    stale, changed = builder.is_stale(DATA_DIR)
+
+    if stale:
+        if changed:
+            print(f"[索引] 检测到教材变更: {', '.join(changed)}")
+        builder.reset_index()
         vs = builder.build_index(chunks)
+        builder.save_manifest(DATA_DIR)
+        print(f"[索引] 已重建: {len(chunks)} 个知识点子块")
+    else:
+        vs = builder.load_index()
+        # 兜底：清单正常但索引异常（如被手动删除部分文件）时重建
+        if vs is None or vs._collection.count() != len(chunks):
+            print("[索引] 索引与清单不一致, 重建")
+            vs.delete_collection()
+            vs = builder.build_index(chunks)
+            builder.save_manifest(DATA_DIR)
+        else:
+            print("[索引] 已是最新, 直接加载")
 
     retriever = Retriever(vs, chunks)
     tutor = MathTutor()

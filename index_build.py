@@ -1,5 +1,9 @@
+import hashlib
+import json
+import shutil
+from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
@@ -7,7 +11,11 @@ from langchain_core.documents import Document
 
 
 class IndexBuilder:
-    """索引构建模块：子块 → Chroma 向量库"""
+    """索引构建模块：子块 → Chroma 向量库（含教材变更自动检测）"""
+
+    MANIFEST_NAME = "manifest.json"
+    COLLECTION_NAME = "math"
+
     def __init__(self, model_name: str = "BAAI/bge-small-zh-v1.5",
                  persist_dir: str = "chroma_db"):
         self.model_name = model_name
@@ -19,6 +27,75 @@ class IndexBuilder:
         )
         self.vectorstore: Optional[Chroma] = None
 
+    # ---------- 教材哈希清单 ----------
+
+    @property
+    def manifest_path(self) -> Path:
+        """清单文件路径：与索引同目录，随 chroma_db 一起被 gitignore"""
+        return Path(self.persist_dir) / self.MANIFEST_NAME
+
+    def compute_hashes(self, data_dir: str) -> Dict[str, str]:
+        """逐文件内容哈希：{相对路径(正斜杠): md5}"""
+        data_path = Path(data_dir)
+        hashes: Dict[str, str] = {}
+        for md_file in sorted(data_path.rglob("*.md")):
+            digest = hashlib.md5(md_file.read_bytes()).hexdigest()
+            key = md_file.relative_to(data_path).as_posix()
+            hashes[key] = digest
+        return hashes
+
+    def is_stale(self, data_dir: str) -> Tuple[bool, List[str]]:
+        """判断索引是否过期，返回 (是否过期, 变更文件列表)。
+
+        以下任一情况视为过期：
+        1. 清单或索引目录不存在（首次运行/被手动删除）
+        2. 教材文件增、删、内容变化
+        3. embedding 模型名变化（旧向量失效）
+        """
+        current = self.compute_hashes(data_dir)
+
+        if not self.manifest_path.exists():
+            return True, sorted(current.keys())
+
+        try:
+            manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return True, sorted(current.keys())
+
+        if manifest.get("model_name") != self.model_name:
+            return True, sorted(current.keys())
+
+        old = manifest.get("files", {})
+        changed = sorted(
+            (set(current) ^ set(old))                       # 新增 + 删除
+            | {k for k in current if old.get(k) != current[k]}  # 内容变化
+        )
+        return (len(changed) > 0), changed
+
+    def save_manifest(self, data_dir: str) -> None:
+        """记录本次建索引对应的教材哈希与模型名，供下次比对"""
+        Path(self.persist_dir).mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "model_name": self.model_name,
+            "built_at": datetime.now().isoformat(timespec="seconds"),
+            "files": self.compute_hashes(data_dir),
+        }
+        self.manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def reset_index(self) -> None:
+        """删除整个索引目录。
+
+        必须在创建 Chroma 客户端之前调用，否则 Windows 下
+        sqlite/hnsw 文件被进程占用，删除会失败。
+        """
+        if Path(self.persist_dir).exists():
+            shutil.rmtree(self.persist_dir)
+
+    # ---------- 索引构建 / 加载 ----------
+
     def build_index(self, chunks: List[Document]) -> Chroma:
         """将子块向量化并存储到chroma向量数据库"""
         if not chunks:
@@ -28,7 +105,7 @@ class IndexBuilder:
             documents=chunks,
             embedding=self.embeddings,
             persist_directory=self.persist_dir,
-            collection_name="math"
+            collection_name=self.COLLECTION_NAME
         )
         return self.vectorstore
 
@@ -39,6 +116,6 @@ class IndexBuilder:
         self.vectorstore = Chroma(
             persist_directory=self.persist_dir,
             embedding_function=self.embeddings,
-            collection_name="math",
+            collection_name=self.COLLECTION_NAME,
         )
         return self.vectorstore
