@@ -1,4 +1,5 @@
 import gradio as gr
+from pathlib import Path
 
 from data_prep import DataPrep
 from index_build import IndexBuilder
@@ -16,27 +17,50 @@ def setup_pipeline():
     chunks = prep.chunk_textbook()
 
     builder = IndexBuilder(persist_dir=PERSIST_DIR)
+    updates = builder.check_updates(DATA_DIR)
 
-    # 教材哈希清单比对：教材有增删改则清库重建，否则直接加载
-    stale, changed = builder.is_stale(DATA_DIR)
+    # 新增教材 → 增量入库（只向量化新文件）；修改/删除/模型变更 → 全量重建
+    need_full_rebuild = (
+        not updates["index_exists"]
+        or updates["model_changed"]
+        or bool(updates["modified"])
+        or bool(updates["removed"])
+    )
 
-    if stale:
-        if changed:
-            print(f"[索引] 检测到教材变更: {', '.join(changed)}")
+    if need_full_rebuild:
+        if updates["modified"] or updates["removed"]:
+            print(f"[索引] 检测到教材变更: 修改={updates['modified']}, 删除={updates['removed']}")
+        elif updates["model_changed"]:
+            print("[索引] embedding 模型变更, 全量重建")
         builder.reset_index()
         vs = builder.build_index(chunks)
         builder.save_manifest(DATA_DIR)
-        print(f"[索引] 已重建: {len(chunks)} 个知识点子块")
+        print(f"[索引] 已全量重建: {len(chunks)} 个知识点子块")
+    elif updates["added"]:
+        # 增量入库：只对新增教材切块向量化，不动已有索引
+        print(f"[索引] 新增教材: {', '.join(updates['added'])}")
+        vs = builder.load_index()
+        added_set = set(updates["added"])
+        new_chunks = [
+            c for c in chunks
+            if Path(c.metadata["source"]).relative_to(DATA_DIR).as_posix() in added_set
+        ]
+        vs.add_documents(
+            new_chunks,
+            ids=[c.metadata["chunk_id"] for c in new_chunks],
+        )
+        builder.save_manifest(DATA_DIR)
+        print(f"[索引] 已增量入库: {len(new_chunks)} 个新子块")
     else:
         vs = builder.load_index()
-        # 兜底：清单正常但索引异常（如被手动删除部分文件）时重建
-        if vs is None or vs._collection.count() != len(chunks):
-            print("[索引] 索引与清单不一致, 重建")
+
+    # 兜底一致性检查：清单正常但索引异常时重建
+    if vs is None or vs._collection.count() != len(chunks):
+        print("[索引] 索引与清单不一致, 重建")
+        if vs is not None:
             vs.delete_collection()
-            vs = builder.build_index(chunks)
-            builder.save_manifest(DATA_DIR)
-        else:
-            print("[索引] 已是最新, 直接加载")
+        vs = builder.build_index(chunks)
+        builder.save_manifest(DATA_DIR)
 
     retriever = Retriever(vs, chunks)
     tutor = MathTutor()

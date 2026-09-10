@@ -44,33 +44,51 @@ class IndexBuilder:
             hashes[key] = digest
         return hashes
 
-    def is_stale(self, data_dir: str) -> Tuple[bool, List[str]]:
-        """判断索引是否过期，返回 (是否过期, 变更文件列表)。
+    def check_updates(self, data_dir: str) -> dict:
+        """对比教材与索引清单，返回更新状态。
 
-        以下任一情况视为过期：
-        1. 清单或索引目录不存在（首次运行/被手动删除）
-        2. 教材文件增、删、内容变化
-        3. embedding 模型名变化（旧向量失效）
+        Returns:
+            {
+              "index_exists": bool,    # 索引目录与清单均存在且可读
+              "model_changed": bool,   # embedding 模型名与建索引时不一致
+              "added": [str],          # 新增的教材文件（相对路径）
+              "modified": [str],       # 内容变化的已有文件
+              "removed": [str],        # 已被删除的教材文件
+            }
         """
         current = self.compute_hashes(data_dir)
 
         if not self.manifest_path.exists():
-            return True, sorted(current.keys())
+            return {
+                "index_exists": False,
+                "model_changed": False,
+                "added": sorted(current.keys()),
+                "modified": [],
+                "removed": [],
+            }
 
         try:
             manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
-            return True, sorted(current.keys())
-
-        if manifest.get("model_name") != self.model_name:
-            return True, sorted(current.keys())
+            return {
+                "index_exists": False,
+                "model_changed": False,
+                "added": sorted(current.keys()),
+                "modified": [],
+                "removed": [],
+            }
 
         old = manifest.get("files", {})
-        changed = sorted(
-            (set(current) ^ set(old))                       # 新增 + 删除
-            | {k for k in current if old.get(k) != current[k]}  # 内容变化
-        )
-        return (len(changed) > 0), changed
+        added = sorted(set(current) - set(old))                       # 新增
+        removed = sorted(set(old) - set(current))                     # 删除
+        modified = sorted(k for k in current if old.get(k) and old.get(k) != current[k])
+        return {
+            "index_exists": True,
+            "model_changed": manifest.get("model_name") != self.model_name,
+            "added": added,
+            "modified": modified,
+            "removed": removed,
+        }
 
     def save_manifest(self, data_dir: str) -> None:
         """记录本次建索引对应的教材哈希与模型名，供下次比对"""
@@ -105,7 +123,9 @@ class IndexBuilder:
             documents=chunks,
             embedding=self.embeddings,
             persist_directory=self.persist_dir,
-            collection_name=self.COLLECTION_NAME
+            collection_name=self.COLLECTION_NAME,
+            # 向量 id 直接使用确定性 chunk_id，保证全量重建与增量入库的 id 一致
+            ids=[c.metadata.get("chunk_id") for c in chunks],
         )
         return self.vectorstore
 
